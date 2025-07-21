@@ -1,0 +1,7 @@
+[package]
+name = "CV"
+version = "2025.1.0"
+entrypoint = "CV-template.typ"
+authors = ["Sergio A. Figueroa"]
+license = "N/A"
+description = "My personal CV format."

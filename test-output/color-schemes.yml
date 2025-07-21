@@ -1,0 +1,31 @@
+color_schemes:
+  default:
+    - use: primary
+      color_space: RGB
+      color: AE5104
+    - use: secondary
+      color_space: RGB
+      color: 0F1F38
+    - use: accent
+      color_space: RGB
+      color: 4B4602
+  alt:
+    - use: primary
+      color_space: RGB
+      color: "011a27"
+    - use: secondary
+      color_space: RGB
+      color: "2988bc"
+    - use: accent
+      color_space: RGB
+      color: F0810F
+  new:
+    - use: primary
+      color_space: RGB
+      color: "011a27"
+    - use: secondary
+      color_space: RGB
+      color: "b64800"
+    - use: accent
+      color_space: RGB
+      color: b64800
