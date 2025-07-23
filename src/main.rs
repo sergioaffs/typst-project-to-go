@@ -58,43 +58,35 @@ impl<'a> TypstConversion for TypstImport<'a> {
     }
 }
 
-fn copy_folder(source_folder: &Path, destination_folder: &Path) {
+fn copy_folder(source_folder: &Path, destination_folder: &Path) -> Result<(), std::io::Error> {
     let d_span = span!(Level::DEBUG, "COPYING");
     let _guard = d_span.enter();
 
     if !destination_folder.exists() {
-        fs::create_dir(destination_folder).expect("The folder should have been created");
+        fs::create_dir(destination_folder)?;
     }
 
     debug!(?source_folder, ?destination_folder);
 
     for node in WalkDir::new(source_folder) {
-        match node {
-            Ok(source_entry) => {
-                let relative_target_path = source_entry
-                    .path()
-                    .strip_prefix(source_folder)
-                    .expect("The prefix should always match");
+        let entry = node?;
+        let source_entry_path = entry.path();
+        let relative_target_path = source_entry_path
+            .strip_prefix(source_folder)
+            .expect("The prefix should always match");
 
-                let full_target_path = PathBuf::from(destination_folder).join(relative_target_path);
+        let full_target_path = PathBuf::from(destination_folder).join(relative_target_path);
 
-                let source_entry_path = source_entry.path();
-
-                if source_entry_path.is_dir() && !source_entry_path.exists() {
-                    match fs::create_dir(&full_target_path) {
-                        Ok(_) => debug!(new_folder=?full_target_path, "Created new file"),
-                        Err(e) => error!(new_folder=?full_target_path, ?e, "Could not create file"),
-                    }
-                } else if source_entry_path.is_file() {
-                    match fs::copy(&source_entry_path, &full_target_path) {
-                        Ok(_) => debug!(src=?source_entry_path, dst=?full_target_path, "COPIED"),
-                        Err(e) => error!(?e, "Could not copy file"),
-                    }
-                }
-            }
-            Err(e) => error!(?e),
+        if source_entry_path.is_dir() && !source_entry_path.exists() {
+            fs::create_dir(&full_target_path)?;
+            debug!(new_folder=?full_target_path, "Created new directory");
+        } else if source_entry_path.is_file() {
+            fs::copy(&source_entry_path, &full_target_path)?;
+            debug!(src=?source_entry_path, dst=?full_target_path, "COPIED");
         }
     }
+
+    Ok(())
 }
 
 fn get_package_location() -> PathBuf {
@@ -118,11 +110,14 @@ fn get_package_location() -> PathBuf {
     package_base_location.join("typst/packages/local")
 }
 
-/// 1. Find folder of local package
-/// 2. Copy folder
-fn create_relative_package(package_details: &TypstImport, relative_package_folder: &Path) {
+/// 1. Find where the local package is located in the filesystem
+/// 2. Copy the local package into the project
+fn create_relative_package(
+    package_details: &TypstImport,
+    relative_package_folder: &Path,
+) -> Result<(), std::io::Error> {
     let local_packages_folder = get_package_location();
-    info!(?local_packages_folder);
+    debug!(?local_packages_folder);
 
     let origin_package_folder = local_packages_folder.join(package_details.package_name);
     let destination_package_folder = relative_package_folder.join(package_details.package_name);
@@ -139,32 +134,45 @@ fn create_relative_package(package_details: &TypstImport, relative_package_folde
         destination_package_folder
             .join(package_details.version)
             .as_path(),
-    )
+    )?;
+
+    Ok(())
 }
 
-fn process_typst_file(source_file_path: &Path, dest_file_path: &Path, dest_pckg_path: &Path) {
+#[derive(Debug, thiserror::Error)]
+enum TypstFileParserError {
+    #[error(transparent)]
+    IOError(#[from] std::io::Error),
+
+    #[error(transparent)]
+    RegexError(#[from] regex::Error),
+}
+
+/// Typst files may contain references to local (external) packages. To wrap them in:
+/// - Identify any calls to local packages. For each such call:
+///   - Replace the call so that it points to a subdirectory rather than a local package
+///   - Copy the local package into that subdirectory
+/// - Copy the (possibly modified) Typst file in the destination path replicating the original file structure.
+fn process_typst_file(
+    source_file_path: &Path,
+    dest_file_path: &Path,
+    dest_pckg_path: &Path,
+) -> Result<(), TypstFileParserError> {
     let i_span = span!(Level::INFO, "TYP conversion");
     let _guard = i_span.enter();
-    info!("Starting parsing");
+
     //Read file line by line
     let source_file = std::fs::File::open(source_file_path)
         .expect("File should exist unless someone is messing with the filesystem");
     let reader = std::io::BufReader::new(&source_file);
 
-    let dest_file = match std::fs::File::create(dest_file_path) {
-        Ok(created_file) => created_file,
-        Err(e) => {
-            error!("Failed to create destination file: {}", e);
-            return;
-        }
-    };
+    let dest_file = std::fs::File::create(dest_file_path)?;
     let mut writer = LineWriter::new(dest_file);
-
+    //MARKER
     // Sample import line:
     // #import "@local/package:2025.1.1": *
-    let re = regex::Regex::new(r#"\s*#import\s+"@local/([^\s:]+):(\w+.\w+.\w+)"\s?(:\s*(.+))?"#)
-        .unwrap();
-    let lines: Vec<String> = reader
+    let re = regex::Regex::new(r#"\s*#import\s+"@local/([^\s:]+):(\w+.\w+.\w+)"\s?(:\s*(.+))?"#)?;
+    reader
         .lines()
         .map_while(Result::ok)
         .map(|line| match re.captures(&line) {
@@ -187,29 +195,23 @@ fn process_typst_file(source_file_path: &Path, dest_file_path: &Path, dest_pckg_
                     version: &version,
                     imports: &imports,
                 };
-                create_relative_package(&typst_package_details, &dest_pckg_path);
-                typst_package_details.format_import_relative()
+                match create_relative_package(&typst_package_details, &dest_pckg_path) {
+                    Ok(_) => typst_package_details.format_import_relative(),
+                    Err(_) => String::from(r#"#panic!("The package could not be moved!")"#),
+                }
             }
             None => line,
         })
-        .collect();
+        .for_each(|line| write!(writer, "{}\r\n", line).expect("Error copying file"));
 
-    for line in lines {
-        write!(writer, "{}\r\n", line).expect("Error copying file");
-    }
-
-    info!("Ended parsing");
+    Ok(())
 }
 
 /// Process each path.
 ///   - If the file is a folder, ensure it exists in the destination project.
 ///   - If the file is not a Typst file, copy it in the destination path replicating the original file structure.
-///   - If the file is a Typst file:
-///      - Identify any calls to local packages. For each such call:
-///        - Replace the call so that it points to a subdirectory rather than a local package
-///        - Copy the local package into that subdirectory
-///      - Copy the (possibly modified) Typst file in the destination path replicating the original file structure.
-fn process(source_path: &Path, target_path: &Path, target_root: &Path) {
+///   - If the file is a Typst file: `process_typst_file` the file
+fn process_path(source_path: &Path, target_path: &Path, target_root: &Path) {
     // If Typst: process further
     let span = span!(Level::DEBUG, "PROCESS", source = source_path.to_str());
     let _guard = span.enter();
@@ -234,9 +236,23 @@ fn process(source_path: &Path, target_path: &Path, target_root: &Path) {
             } else if src_metadata.is_file() {
                 if source_path.extension().and_then(std::ffi::OsStr::to_str) == Some("typ") {
                     // Case 2: Typst file
-                    process_typst_file(source_path, target_path, &packages_path);
+                    match process_typst_file(source_path, target_path, &packages_path) {
+                        Ok(_) => debug!("Typst file processed"),
+                        Err(e) => match e {
+                            TypstFileParserError::IOError(inner_e) => {
+                                error!(?inner_e, "IOError: The file could not be processed")
+                            }
+                            TypstFileParserError::RegexError(inner_e) => {
+                                error!(
+                                    ?inner_e,
+                                    "RegexError: Error while looking for imports in Typst file"
+                                )
+                            }
+                        },
+                    }
                 } else {
                     match fs::copy(source_path, target_path) {
+                        // Case 3: any other file
                         Ok(_) => {}
                         Err(e) => {
                             error!(?e, ?source_path, ?target_path, "Error copying file")
@@ -245,7 +261,7 @@ fn process(source_path: &Path, target_path: &Path, target_root: &Path) {
                 }
             }
         }
-        Err(e) => error!(?e, "Could not open file"),
+        Err(e) => error!(?e, "Could not get file metadata"),
     }
 }
 
@@ -270,7 +286,7 @@ fn main() {
         .into_iter()
         .map(|entry_res| {
             let entry = entry_res
-                .unwrap_or_else(|_| panic!("Unexpected error while exploring source directory"));
+                .unwrap_or_else(|_| panic!("Error while browsing the source folder. Ensure the path is valid and accessible."));
             let relative_target_path = entry
                 .path()
                 .strip_prefix(&args.source_folder)
@@ -281,5 +297,7 @@ fn main() {
 
             (entry, full_new_path)
         })
-        .for_each(|entry| process(entry.0.path(), entry.1.as_path(), &args.target_folder));
+        .for_each(|entry| process_path(entry.0.path(), entry.1.as_path(), &args.target_folder));
+
+    info!("✔️ Finished successfully");
 }
