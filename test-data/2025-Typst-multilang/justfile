@@ -1,9 +1,0 @@
-today := `date +"%Y.%m"`
-
-build:
-    typst compile CV.typ CV-SergioAFigueroa-{{today}}-de.pdf --input lang=de
-    typst compile CV.typ CV-SergioAFigueroa-{{today}}-en.pdf --input lang=en
-
-# CV-SergioAFigueroa-2025.03-DE.pdf
-clean:
-    rm CV-SergioAFigueroa*.pdf

@@ -202,7 +202,7 @@ fn process_typst_file(
             }
             None => line,
         })
-        .for_each(|line| write!(writer, "{}\r\n", line).expect("Error copying file"));
+        .for_each(|line| write!(writer, "{}\n", line).expect("Error copying file"));
 
     Ok(())
 }
@@ -265,6 +265,26 @@ fn process_path(source_path: &Path, target_path: &Path, target_root: &Path) {
     }
 }
 
+fn package_folder_to_go(source_folder: &Path, target_folder: &Path) {
+    let original_file_structure = WalkDir::new(source_folder).max_depth(5);
+    original_file_structure
+        .into_iter()
+        .map(|entry_res| {
+            let entry = entry_res
+                .unwrap_or_else(|_| panic!("Error while browsing the source folder. Ensure the path is valid and accessible."));
+            let relative_target_path = entry
+                .path()
+                .strip_prefix(source_folder)
+                .expect("The prefix should always be removable");
+            let mut full_new_path = PathBuf::new();
+            full_new_path.push(target_folder);
+            full_new_path.push(relative_target_path);
+
+            (entry, full_new_path)
+        })
+        .for_each(|entry| process_path(entry.0.path(), entry.1.as_path(), target_folder));
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -281,23 +301,93 @@ fn main() {
     let args = Cli::parse();
     info!(?args, "Starting");
 
-    let original_file_structure = WalkDir::new(&args.source_folder).max_depth(5);
-    original_file_structure
-        .into_iter()
-        .map(|entry_res| {
-            let entry = entry_res
-                .unwrap_or_else(|_| panic!("Error while browsing the source folder. Ensure the path is valid and accessible."));
-            let relative_target_path = entry
-                .path()
-                .strip_prefix(&args.source_folder)
-                .expect("The prefix should always be removable");
-            let mut full_new_path = PathBuf::new();
-            full_new_path.push(&args.target_folder);
-            full_new_path.push(relative_target_path);
-
-            (entry, full_new_path)
-        })
-        .for_each(|entry| process_path(entry.0.path(), entry.1.as_path(), &args.target_folder));
+    package_folder_to_go(&args.source_folder, &args.target_folder);
 
     info!("✔️ Finished successfully");
+    // todo!("Test on Windows");
+    // todo!(
+    // "Generic packages for testing (e.g. single file, multiple versions, complex up to 5 levels)"
+    // );
+    // todo!("Unit tests");
+    // todo!("Compile");
+}
+
+#[cfg(test)]
+mod tests {
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::io::{BufReader, Read};
+    use std::path::{Path, PathBuf};
+
+    use tracing::debug;
+
+    use crate::package_folder_to_go;
+
+    #[test]
+    /// Basic test: different files on a single level (no nested folders).
+    /// There is one Typst file but with no imports (it should be identical to source).
+    fn basic() {
+        let source_folder = Path::new("./test-data/1-basic");
+        let target_folder = PathBuf::from("./test-output/1-basic");
+        let file_digests = vec![
+            (
+                "single.typ",
+                "e902ec256d1f5b5f7f6ccb9aba5596d641726dd180997ead28c8b8943977aef8",
+            ),
+            (
+                "mime-fencing.jpg",
+                "7f569bef477ec154405ab76d3a422e015f0a9db5e9a4cf7ad61537396ebfbebc",
+            ),
+            (
+                "SourceSans3-BoldIt.otf",
+                "05e97d9adc01059607e97b167a68afb25680db904db7aba831dc2510f14b6515",
+            ),
+        ];
+        // let target_single_file = target_folder.join("single.typ");
+
+        if target_folder.exists() {
+            fs::remove_dir_all(&target_folder).expect("The file should be removable.");
+        }
+
+        fs::create_dir(&target_folder)
+            .expect("Could not create target directory. Check permissions and rerun the tests");
+        // if target_single_file.exists() {
+        //     fs::remove_file(&target_single_file).expect("The file should be removable.");
+        // }
+
+        package_folder_to_go(source_folder, target_folder.as_path());
+
+        for file_digest in file_digests {
+            assert_eq!(
+                sha256_digest(&target_folder.join(file_digest.0)).unwrap_or(String::from(
+                    "It should be possible to get the digest of that file"
+                )),
+                String::from(file_digest.1)
+            );
+        }
+    }
+
+    // #[test]
+    /// Flat structure: different files in a single level (no nested folders).
+    // fn flat() {}
+
+    fn sha256_digest(path: &PathBuf) -> Result<String, std::io::Error> {
+        let input = fs::File::open(path)?;
+        let mut reader = BufReader::new(input);
+
+        let digest = {
+            let mut hasher = Sha256::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let count = reader.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                debug!(count);
+                hasher.update(&buffer[..count]);
+            }
+            hasher.finalize()
+        };
+        Ok(format!("{:x}", digest))
+    }
 }
