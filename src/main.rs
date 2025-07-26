@@ -89,6 +89,10 @@ fn copy_folder(source_folder: &Path, destination_folder: &Path) -> Result<(), st
     Ok(())
 }
 
+/// From https://github.com/typst/packages:
+/// - $XDG_DATA_HOME or ~/.local/share on Linux
+/// - ~/Library/Application Support on macOS
+/// - %APPDATA% on Windows
 fn get_package_location() -> PathBuf {
     let package_base_location = match std::env::consts::OS {
         "linux" => match std::env::var("XDG_DATA_HOME") {
@@ -99,8 +103,16 @@ fn get_package_location() -> PathBuf {
                 PathBuf::from(home_path).join(".local/share")
             }
         },
-        "windows" => PathBuf::from("%APPDATA%"),
-        "macos" => PathBuf::from("~/Library/Application Support"),
+        "windows" => {
+            let home_path =
+                std::env::var("APPDATA").unwrap_or(String::from("Could not resolve $HOME"));
+            PathBuf::from(home_path)
+        }
+        "macos" => {
+            let home_path =
+                std::env::var("HOME").unwrap_or(String::from("Could not resolve $HOME"));
+            PathBuf::from(home_path).join("Library/Application Support")
+        }
         unrecognized_os_name => panic!(
             "The os `{}` is not supported by Typst",
             unrecognized_os_name
