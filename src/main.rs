@@ -7,6 +7,7 @@
 //!   + Point reference to a relative folder called `pckgs` (make name parameterizable).
 //!   + Copy content of package into `pkcgs/package-name`
 
+use inquire::Confirm;
 use std::fs;
 use std::io::prelude::*;
 use std::io::{BufRead, LineWriter};
@@ -223,10 +224,12 @@ fn process_typst_file(
 ///   - If the file is a folder, ensure it exists in the destination project.
 ///   - If the file is not a Typst file, copy it in the destination path replicating the original file structure.
 ///   - If the file is a Typst file: `process_typst_file` the file
-fn process_path(source_path: &Path, target_path: &Path, target_root: &Path) {
+fn process_path(source_path: &Path, target_path: &Path, args: &Cli) {
     // If Typst: process further
     let span = span!(Level::DEBUG, "PROCESS", source = source_path.to_str());
     let _guard = span.enter();
+
+    let target_root = &args.target_folder;
 
     // todo!("Consider: make local package folder name customizable")
     let packages_path = target_root.join("pckgs");
@@ -242,6 +245,17 @@ fn process_path(source_path: &Path, target_path: &Path, target_root: &Path) {
                         }
                         Err(e) => {
                             error!(?e, name = ?target_path, "Failed to create folder")
+                        }
+                    }
+                } else {
+                    if !args.overwrite_target {
+                        match Confirm::new("The target folder already exists. Overwrite?")
+                            .with_default(false)
+                            .prompt()
+                        {
+                            Ok(true) => {} // go ahead
+                            Ok(false) => panic!("Can't continue because the folder already exists"),
+                            Err(e) => error!(?e, "Error while parsing the input"),
                         }
                     }
                 }
@@ -277,8 +291,11 @@ fn process_path(source_path: &Path, target_path: &Path, target_root: &Path) {
     }
 }
 
-fn package_folder_to_go(source_folder: &Path, target_folder: &Path) {
-    let original_file_structure = WalkDir::new(source_folder).max_depth(5);
+fn package_folder_to_go(args: &Cli) {
+    let source_folder = args.source_folder.as_path();
+    let target_folder = args.target_folder.as_path();
+
+    let original_file_structure = WalkDir::new(&source_folder).max_depth(5);
     original_file_structure
         .into_iter()
         .map(|entry_res| {
@@ -286,23 +303,27 @@ fn package_folder_to_go(source_folder: &Path, target_folder: &Path) {
                 .unwrap_or_else(|_| panic!("Error while browsing the source folder. Ensure the path is valid and accessible."));
             let relative_target_path = entry
                 .path()
-                .strip_prefix(source_folder)
+                .strip_prefix(&source_folder)
                 .expect("The prefix should always be removable");
             let mut full_new_path = PathBuf::new();
-            full_new_path.push(target_folder);
+            full_new_path.push(&target_folder);
             full_new_path.push(relative_target_path);
 
             (entry, full_new_path)
         })
-        .for_each(|entry| process_path(entry.0.path(), entry.1.as_path(), target_folder));
+        .for_each(|entry| process_path(entry.0.path(), entry.1.as_path(), &args));
 }
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Cli {
+pub(crate) struct Cli {
     source_folder: PathBuf,
 
     target_folder: PathBuf,
+
+    /// If the target exists, overwrite content
+    #[arg(short)]
+    overwrite_target: bool,
 }
 
 /// Explore the input project and process each file on it. (`process` defines what to do with
@@ -313,7 +334,7 @@ fn main() {
     let args = Cli::parse();
     info!(?args, "Starting");
 
-    package_folder_to_go(&args.source_folder, &args.target_folder);
+    package_folder_to_go(&args);
 
     info!("✔️ Finished successfully");
     // todo!("Test on Windows");
@@ -333,13 +354,13 @@ mod tests {
 
     use tracing::debug;
 
-    use crate::package_folder_to_go;
+    use crate::{Cli, package_folder_to_go};
 
     #[test]
     /// Basic test: different files on a single level (no nested folders).
     /// There is one Typst file but with no imports (it should be identical to source).
     fn basic() {
-        let source_folder = Path::new("./test-data/1-basic");
+        let source_folder = PathBuf::from("./test-data/1-basic");
         let target_folder = PathBuf::from("./test-output/1-basic");
         let file_digests = vec![
             (
@@ -366,12 +387,17 @@ mod tests {
         // if target_single_file.exists() {
         //     fs::remove_file(&target_single_file).expect("The file should be removable.");
         // }
+        let args = Cli {
+            source_folder: source_folder,
+            target_folder: target_folder,
+            overwrite_target: true,
+        };
 
-        package_folder_to_go(source_folder, target_folder.as_path());
+        package_folder_to_go(&args);
 
         for file_digest in file_digests {
             assert_eq!(
-                sha256_digest(&target_folder.join(file_digest.0)).unwrap_or(String::from(
+                sha256_digest(&args.target_folder.join(file_digest.0)).unwrap_or(String::from(
                     "It should be possible to get the digest of that file"
                 )),
                 String::from(file_digest.1)
