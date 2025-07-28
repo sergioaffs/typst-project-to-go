@@ -53,7 +53,7 @@ impl<'a> TypstConversion for TypstImport<'a> {
             }
         };
         format!(
-            r#"#import "pckgs/{}/{}/{}": {}"#,
+            r#"#import "/pckgs/{}/{}/{}": {}"#,
             self.package_name, self.version, entrypoint, self.imports
         )
     }
@@ -350,7 +350,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::io::{BufReader, Read};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use tracing::debug;
 
