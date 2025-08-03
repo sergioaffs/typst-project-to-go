@@ -54,7 +54,10 @@ impl<'a> TypstConversion for TypstImport<'a> {
         };
         format!(
             r#"#import "/pckgs/{}/{}/{}": {}"#,
-            self.package_name, self.version, entrypoint, self.imports
+            self.package_name,
+            self.version,
+            entrypoint,
+            self.imports.trim()
         )
     }
 }
@@ -161,6 +164,38 @@ enum TypstFileParserError {
     RegexError(#[from] regex::Error),
 }
 
+fn parse_line(line: &String, dest_pckg_path: &Path) -> String {
+    let re = regex::Regex::new(r#"\s*#import\s+"@local/([^\s:]+):(\w+.\w+.\w+)"\s?(:\s*(.+))?"#)
+        .unwrap();
+    match re.captures(&line) {
+        Some(matched_line) => {
+            let package_name = matched_line
+                .get(1)
+                .expect("Match must have content")
+                .as_str();
+            let version = matched_line
+                .get(2)
+                .expect("Match must have content")
+                .as_str();
+            let imports = match matched_line.get(4) {
+                Some(match_group) => match_group.as_str(),
+                None => "*",
+            };
+
+            let typst_package_details = TypstImport {
+                package_name: &package_name,
+                version: &version,
+                imports: &imports,
+            };
+            match create_relative_package(&typst_package_details, &dest_pckg_path) {
+                Ok(_) => typst_package_details.format_import_relative(),
+                Err(_) => String::from(r#"#panic!("The package could not be moved!")"#),
+            }
+        }
+        None => line.to_owned(),
+    }
+}
+
 /// Typst files may contain references to local (external) packages. To wrap them in:
 /// - Identify any calls to local packages. For each such call:
 ///   - Replace the call so that it points to a subdirectory rather than a local package
@@ -184,37 +219,10 @@ fn process_typst_file(
     //MARKER
     // Sample import line:
     // #import "@local/package:2025.1.1": *
-    let re = regex::Regex::new(r#"\s*#import\s+"@local/([^\s:]+):(\w+.\w+.\w+)"\s?(:\s*(.+))?"#)?;
     reader
         .lines()
         .map_while(Result::ok)
-        .map(|line| match re.captures(&line) {
-            Some(matched_line) => {
-                let package_name = matched_line
-                    .get(1)
-                    .expect("Match must have content")
-                    .as_str();
-                let version = matched_line
-                    .get(2)
-                    .expect("Match must have content")
-                    .as_str();
-                let imports = match matched_line.get(4) {
-                    Some(match_group) => match_group.as_str(),
-                    None => "*",
-                };
-
-                let typst_package_details = TypstImport {
-                    package_name: &package_name,
-                    version: &version,
-                    imports: &imports,
-                };
-                match create_relative_package(&typst_package_details, &dest_pckg_path) {
-                    Ok(_) => typst_package_details.format_import_relative(),
-                    Err(_) => String::from(r#"#panic!("The package could not be moved!")"#),
-                }
-            }
-            None => line,
-        })
+        .map(|line| parse_line(&line, &dest_pckg_path))
         .for_each(|line| write!(writer, "{}\n", line).expect("Error copying file"));
 
     Ok(())
@@ -350,11 +358,11 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::io::{BufReader, Read};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use tracing::debug;
 
-    use crate::{Cli, package_folder_to_go};
+    use crate::{Cli, package_folder_to_go, parse_line};
 
     #[test]
     /// Basic test: different files on a single level (no nested folders).
@@ -405,6 +413,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn line_parsing() {
+        // For this test, there must be packages with the right names and configuration in the Typst package folder. A copy of the packages expected is located in the folder `test-local-packages`
+        let dest_pckg_path = Path::new(".");
+        let inputs = vec![
+            "test",
+            "A longer line with unexpected characters:⚡😅🍣ラメン",
+            r#"#import "lettertemp.typ": *"#,
+            r#"#import "@local/simple-package:2025.1.0": *"#,
+            r#"         #import "@local/simple-package:2025.1.0": *       "#,
+            r#"#import "@local/simple-package:2025.1.0": i1"#,
+            r#"#import "@local/simple-package:2025.1.0": i1, i2"#,
+            // r#"#import "@local/a-package:2025.1.0": *"#,
+        ];
+        let expected_outputs = vec![
+            "test",                                                           // same as input
+            "A longer line with unexpected characters:⚡😅🍣ラメン",          // same as input
+            r#"#import "lettertemp.typ": *"#, // same as input (project-specific import)
+            r#"#import "/pckgs/simple-package/2025.1.0/entrypoint.typ": *"#, // Local package with universal import
+            r#"#import "/pckgs/simple-package/2025.1.0/entrypoint.typ": *"#, // Same as previous (spaces need trimming)
+            r#"#import "/pckgs/simple-package/2025.1.0/entrypoint.typ": i1"#, // Same local package as previous, one concrete import
+            r#"#import "/pckgs/simple-package/2025.1.0/entrypoint.typ": i1, i2"#, // Same local package as previous, two imports
+                                                                                  // r#"#import "/pckgs/a-package/2025.1.0/CV-template.typ": *"#, // Local package with universal import
+        ];
+        inputs
+            .iter()
+            .map(|s| s.to_string())
+            .zip(expected_outputs.iter().map(|s| s.to_string()))
+            .for_each(|(input, expected_output)| {
+                let parsed = parse_line(&input, &dest_pckg_path);
+                assert_eq!(parsed, expected_output);
+
+                // println!("{} --> {}", input, parsed);
+            });
+        // parse_line(&"test".to_string(), dest_pckg_path);
+    }
     // #[test]
     /// Flat structure: different files in a single level (no nested folders).
     // fn flat() {}

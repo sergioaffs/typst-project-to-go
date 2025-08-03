@@ -1,0 +1,7 @@
+[package]
+name = "simple-package"
+version = "2025.1.0"
+entrypoint = "entrypoint.typ"
+authors = ["THE AUTHOR"]
+license = "N/A"
+description = "A package"
