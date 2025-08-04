@@ -81,7 +81,7 @@ fn copy_folder(source_folder: &Path, destination_folder: &Path) -> Result<(), st
 
         let full_target_path = PathBuf::from(destination_folder).join(relative_target_path);
 
-        if source_entry_path.is_dir() && !source_entry_path.exists() {
+        if source_entry_path.is_dir() && !full_target_path.exists() {
             fs::create_dir(&full_target_path)?;
             debug!(new_folder=?full_target_path, "Created new directory");
         } else if source_entry_path.is_file() {
