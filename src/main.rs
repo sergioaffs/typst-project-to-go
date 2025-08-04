@@ -232,7 +232,7 @@ fn process_typst_file(
 ///   - If the file is a folder, ensure it exists in the destination project.
 ///   - If the file is not a Typst file, copy it in the destination path replicating the original file structure.
 ///   - If the file is a Typst file: `process_typst_file` the file
-fn process_path(source_path: &Path, target_path: &Path, args: &Cli) {
+fn process_path(source_path: &Path, target_path: &Path, args: &Cli, overwrite: &mut bool) {
     // If Typst: process further
     let span = span!(Level::DEBUG, "PROCESS", source = source_path.to_str());
     let _guard = span.enter();
@@ -256,12 +256,12 @@ fn process_path(source_path: &Path, target_path: &Path, args: &Cli) {
                         }
                     }
                 } else {
-                    if !args.overwrite_target {
+                    if !*overwrite {
                         match Confirm::new("The target folder already exists. Overwrite?")
                             .with_default(false)
                             .prompt()
                         {
-                            Ok(true) => {} // go ahead
+                            Ok(true) => *overwrite = true, // go ahead
                             Ok(false) => panic!("Can't continue because the folder already exists"),
                             Err(e) => error!(?e, "Error while parsing the input"),
                         }
@@ -302,6 +302,7 @@ fn process_path(source_path: &Path, target_path: &Path, args: &Cli) {
 fn package_folder_to_go(args: &Cli) {
     let source_folder = args.source_folder.as_path();
     let target_folder = args.target_folder.as_path();
+    let mut overwrite = args.overwrite_target;
 
     let original_file_structure = WalkDir::new(&source_folder).max_depth(5);
     original_file_structure
@@ -319,7 +320,7 @@ fn package_folder_to_go(args: &Cli) {
 
             (entry, full_new_path)
         })
-        .for_each(|entry| process_path(entry.0.path(), entry.1.as_path(), &args));
+        .for_each(|entry| process_path(entry.0.path(), entry.1.as_path(), &args, &mut overwrite));
 }
 
 #[derive(Parser, Debug)]
